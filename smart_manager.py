@@ -1,6 +1,6 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from langchain.llms import HuggingFacePipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
+from langchain_community.llms import HuggingFacePipeline
 
 class SmartModelManager:
     def __init__(self, expert_configs, device="cuda"):
@@ -30,6 +30,7 @@ class SmartModelManager:
                 model = AutoModelForCausalLM.from_pretrained(
                     config["model_id"],
                     quantization_config=quantization_config,
+                    trust_remote_code=True,
                     device_map="auto",
                 )
             
@@ -37,14 +38,24 @@ class SmartModelManager:
                 self.tokenizer_cache[config["model_id"]] = AutoTokenizer.from_pretrained(config["model_id"])
             
             tokenizer = self.tokenizer_cache[config["model_id"]]
+            
+            # Ensure tokenizer has pad_token
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
 
-            pipeline = HuggingFacePipeline.from_model_and_tokenizer(
+            # Create the pipeline first
+            pipe = pipeline(
+                "text-generation",
                 model=model,
                 tokenizer=tokenizer,
-                task="text-generation",
-                model_kwargs={"max_length": config.get("max_length", 1024)},
+                max_new_tokens=config.get("max_length", 512),
+                temperature=0.1,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
             )
-            self.experts[expert_name] = pipeline
+            
+            # Then wrap it in HuggingFacePipeline
+            self.experts[expert_name] = HuggingFacePipeline(pipeline=pipe)
             self.current_model = expert_name
             print(f"Expert {expert_name} loaded.")
 
