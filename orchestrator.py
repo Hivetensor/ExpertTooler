@@ -1,7 +1,7 @@
 from langchain.agents import initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from langchain.llms import HuggingFacePipeline
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from langchain_community.llms import HuggingFacePipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
 import torch
 
 def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
@@ -26,19 +26,20 @@ def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
         )
     tokenizer = AutoTokenizer.from_pretrained(base_model_config["model_id"])
 
-    base_model_pipeline = HuggingFacePipeline.from_model_and_tokenizer(
+    pipe = pipeline(
+        "text-generation",
         model=model,
         tokenizer=tokenizer,
-        task="text-generation",
-        model_kwargs={"max_length": base_model_config.get("max_length", 2048)},
+        max_new_tokens=base_model_config.get("max_length", 2048)
     )
+    base_model_pipeline = HuggingFacePipeline(pipeline=pipe)
 
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
     agent = initialize_agent(
         tools=expert_tools,
         llm=base_model_pipeline,
-        agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
+        agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
         verbose=True,
         memory=memory,
         handle_parsing_errors=True,
