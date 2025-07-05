@@ -1,6 +1,13 @@
 transformers
 datasets
 torch
+torchvision
+torchaudio
 bitsandbytes
 accelerate
 langchain
+langchain-community
+tqdm
+optimum
+onnxruntime
+onnxruntime-directml

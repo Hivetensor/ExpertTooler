@@ -4,23 +4,26 @@ from langchain.llms import HuggingFacePipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 
-def create_orchestrator_agent(expert_tools, base_model_config):
+def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
     """
     Initializes and returns a LangChain ReAct agent.
     """
-    print("Initializing base model for orchestrator...")
-    
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=base_model_config.get("load_in_4bit", True),
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-    )
+    print(f"Initializing base model for orchestrator on {device}...")
 
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_config["model_id"],
-        quantization_config=quantization_config,
-        device_map="auto",
-    )
+    if device == "dml":
+        from optimum.onnxruntime import ORTModelForCausalLM
+        model = ORTModelForCausalLM.from_pretrained(base_model_config["model_id"], provider="DmlExecutionProvider")
+    else: # cuda
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=base_model_config.get("load_in_4bit", True),
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_config["model_id"],
+            quantization_config=quantization_config,
+            device_map="auto",
+        )
     tokenizer = AutoTokenizer.from_pretrained(base_model_config["model_id"])
 
     base_model_pipeline = HuggingFacePipeline.from_model_and_tokenizer(

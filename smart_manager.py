@@ -3,31 +3,35 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from langchain.llms import HuggingFacePipeline
 
 class SmartModelManager:
-    def __init__(self, expert_configs):
+    def __init__(self, expert_configs, device="cuda"):
         self.experts = {}
         self.current_model = None
         self.configs = expert_configs
         self.tokenizer_cache = {}
+        self.device = device
 
     def get_expert(self, expert_name):
         if self.current_model and self.current_model != expert_name:
             self.unload_all()
 
         if expert_name not in self.experts:
-            print(f"Loading expert: {expert_name}...")
+            print(f"Loading expert: {expert_name} on {self.device}...")
             config = self.configs[expert_name]
-            
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=config.get("load_in_4bit", True),
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-            )
 
-            model = AutoModelForCausalLM.from_pretrained(
-                config["model_id"],
-                quantization_config=quantization_config,
-                device_map="auto",
-            )
+            if self.device == "dml":
+                from optimum.onnxruntime import ORTModelForCausalLM
+                model = ORTModelForCausalLM.from_pretrained(config["model_id"], provider="DmlExecutionProvider")
+            else: # cuda
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=config.get("load_in_4bit", True),
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    config["model_id"],
+                    quantization_config=quantization_config,
+                    device_map="auto",
+                )
             
             if config["model_id"] not in self.tokenizer_cache:
                 self.tokenizer_cache[config["model_id"]] = AutoTokenizer.from_pretrained(config["model_id"])

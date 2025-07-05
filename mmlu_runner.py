@@ -1,9 +1,14 @@
 import os
+import argparse
 import pandas as pd
+from tqdm import tqdm
 from datasets import load_dataset
 from smart_manager import SmartModelManager
 from expert_tools import create_expert_tools
 from orchestrator import create_orchestrator_agent
+from langchain.llms import HuggingFacePipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
 
 # --- Configuration ---
 BASE_MODEL_CONFIG = {
@@ -45,16 +50,24 @@ def format_question(row):
     choices = "\n".join([f"{chr(65+i)}. {row[f'choice{i}']}" for i in range(4)])
     return f"{question}Choices:\n{choices}\nAnswer:"
 
-def evaluate_mmlu_subset(agent, dataset, num_questions=5):
+def evaluate_mmlu_subset(model, dataset, num_questions=5):
     results = []
-    for i in range(min(num_questions, len(dataset))):
+    for i in tqdm(range(min(num_questions, len(dataset))), desc="Evaluating"):
         row = dataset[i]
         prompt = format_question(row)
         
         try:
-            response = agent.run(input=prompt)
+            if hasattr(model, 'run'): # It's an agent
+                response = model.run(input=prompt)
+            else: # It's a pipeline
+                response = model(prompt)[0]['generated_text']
+
             predicted_answer = response.strip().upper()
-            correct_answer = row['answer'].upper()
+            # Extract the first letter if the model provides a longer response
+            if predicted_answer:
+                predicted_answer = predicted_answer[0]
+
+            correct_answer = row['answer']
             
             results.append({
                 "question": prompt,
@@ -69,12 +82,54 @@ def evaluate_mmlu_subset(agent, dataset, num_questions=5):
     return pd.DataFrame(results)
 
 def main():
-    # --- Initialize Managers and Tools ---
-    smart_manager = SmartModelManager(EXPERT_CONFIGS)
-    expert_tools = create_expert_tools(smart_manager)
-    
-    # --- Create Agent ---
-    agent = create_orchestrator_agent(expert_tools, BASE_MODEL_CONFIG)
+    parser = argparse.ArgumentParser(description="Run MMLU evaluation.")
+    parser.add_argument("--mode", type=str, default="orchestration", choices=["baseline", "orchestration"],
+                        help="Evaluation mode: 'baseline' or 'orchestration'.")
+    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "dml"],
+                        help="Device to run on: 'cuda' for NVIDIA GPUs, 'dml' for DirectML.")
+    args = parser.parse_args()
+
+    print(f"Running evaluation in {args.mode} mode on {args.device} device.")
+
+    if args.mode == "baseline":
+        # --- Initialize Baseline Model ---
+        print("Initializing baseline model...")
+        if args.device == "dml":
+            from optimum.onnxruntime import ORTModelForCausalLM
+            model = ORTModelForCausalLM.from_pretrained(BASE_MODEL_CONFIG["model_id"], provider="DmlExecutionProvider")
+            tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_CONFIG["model_id"])
+            baseline_pipeline = HuggingFacePipeline.from_model_and_tokenizer(
+                model=model,
+                tokenizer=tokenizer,
+                task="text-generation",
+                model_kwargs={"max_length": BASE_MODEL_CONFIG.get("max_length", 2048)},
+            )
+        else: # cuda
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                BASE_MODEL_CONFIG["model_id"],
+                quantization_config=quantization_config,
+                device_map="auto",
+            )
+            tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_CONFIG["model_id"])
+            baseline_pipeline = HuggingFacePipeline.from_model_and_tokenizer(
+                model=model,
+                tokenizer=tokenizer,
+                task="text-generation",
+                model_kwargs={"max_length": BASE_MODEL_CONFIG.get("max_length", 2048)},
+            )
+        model_to_evaluate = baseline_pipeline
+        smart_manager = None
+    else:
+        # --- Initialize Managers and Tools for Orchestration ---
+        smart_manager = SmartModelManager(EXPERT_CONFIGS, device=args.device)
+        expert_tools = create_expert_tools(smart_manager)
+        agent = create_orchestrator_agent(expert_tools, BASE_MODEL_CONFIG, device=args.device)
+        model_to_evaluate = agent
 
     # --- Run Evaluation ---
     for domain, subjects in MMLU_DOMAINS.items():
@@ -83,17 +138,18 @@ def main():
             print(f"  Loading MMLU subject: {subject}")
             try:
                 dataset = load_dataset("cais/mmlu", subject, split="test")
-                df_results = evaluate_mmlu_subset(agent, dataset)
+                df_results = evaluate_mmlu_subset(model_to_evaluate, dataset)
                 
                 accuracy = df_results["is_correct"].mean()
                 print(f"  Accuracy on {subject}: {accuracy:.2%}")
-                print(df_results)
+                print(df_results.head())
                 
             except Exception as e:
                 print(f"  Failed to load or evaluate {subject}: {e}")
 
     # --- Cleanup ---
-    smart_manager.unload_all()
+    if smart_manager:
+        smart_manager.unload_all()
     print("\nEvaluation complete.")
 
 if __name__ == "__main__":
