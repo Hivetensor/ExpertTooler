@@ -303,8 +303,6 @@ def main():
     parser.add_argument("--mode", type=str, default="orchestration", 
                         choices=["baseline", "orchestration", "test_experts", "benchmark_all"],  # Added benchmark_all
                         help="Evaluation mode")
-    parser.add_argument("--mode", type=str, default="orchestration", choices=["baseline", "orchestration", "test_experts"],
-                        help="Evaluation mode: 'baseline', 'orchestration', or 'test_experts'.")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "dml"],
                         help="Device to run on: 'cuda' for NVIDIA GPUs, 'dml' for DirectML.")
     parser.add_argument("--num_questions", type=int, default=5,
