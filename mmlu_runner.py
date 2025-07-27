@@ -14,7 +14,7 @@ import torch
 
 # --- Configuration ---
 BASE_MODEL_CONFIG = {
-    "model_id": "mistralai/Mistral-7B-Instruct-v0.1",
+    "model_id": "mistralai/Mixtral-8x7B-Instruct-v0.1",  # ~35GB in 4-bit
     "max_length": 2048,
 }
 
@@ -22,30 +22,143 @@ EXPERT_CONFIGS = {
     "math": {
         "name": "MathematicsExpert",
         "description": "Expert in mathematical reasoning, calculations, and symbolic math.",
-        "model_id": "deepseek-ai/deepseek-math-7b-instruct",
+        "model_id": "deepseek-ai/deepseek-math-7b-rl",  # RL-tuned version
     },
     "bio": {
         "name": "BiologyExpert",
         "description": "Expert in biology, medicine, and life sciences.",
-        "model_id": "BioMistral/BioMistral-7B",
+        "model_id": "epfl-llm/meditron-7b",  # Better medical knowledge
     },
     "chem": {
         "name": "ChemistryExpert",
         "description": "Expert in chemistry, molecular structures, and reactions.",
-        "model_id": "AI4Chem/ChemLLM-7B-Chat-1_5-SFT", # Fallback to BioMistral if needed
+        "model_id": "OpenBMB/MiniCPM-2B-sft-bf16",
     },
     "code": {
         "name": "CodeExpert",
         "description": "Expert in programming, algorithms, and code generation.",
-        "model_id": "codellama/CodeLlama-7b-Instruct-hf",
+        "model_id": "codellama/CodeLlama-13b-Instruct-hf",  # ~8GB in 4-bit
     },
 }
+
+
 
 MMLU_DOMAINS = {
     "STEM": ["abstract_algebra", "college_mathematics", "high_school_mathematics", "formal_logic"],
     "BioMed": ["anatomy", "clinical_knowledge", "college_biology", "college_medicine", "professional_medicine"],
     "Chemistry": ["college_chemistry", "high_school_chemistry"],
 }
+
+def benchmark_individual_models(smart_manager, base_model_config, device="cuda"):
+    """Test each model individually on their specific domains"""
+    results = {}
+    
+    print("\n" + "="*80)
+    print("INDIVIDUAL MODEL BENCHMARKING")
+    print("="*80)
+    
+    # Test baseline model on all subjects
+    print("\n1. Testing baseline model on all domains...")
+    baseline_pipeline = create_baseline_model(base_model_config, device)
+    
+    for domain, subjects in MMLU_DOMAINS.items():
+        domain_results = []
+        for subject in subjects:
+            dataset = load_dataset("cais/mmlu", subject, split="test")
+            df = evaluate_mmlu_subset(baseline_pipeline, dataset, num_questions=10)
+            domain_results.append(df)
+        
+        domain_df = pd.concat(domain_results)
+        accuracy = domain_df["is_correct"].mean()
+        results[f"baseline_{domain}"] = accuracy
+        print(f"  Baseline on {domain}: {accuracy:.2%}")
+    
+    # Test each expert on their own domain
+    print("\n2. Testing experts on their specialized domains...")
+    expert_domain_mapping = {
+        "math": ["abstract_algebra", "college_mathematics", "high_school_mathematics"],
+        "bio": ["anatomy", "college_biology", "college_medicine"],
+        "chem": ["college_chemistry", "high_school_chemistry"],
+        "code": ["computer_security", "high_school_computer_science"],  # Add CS subjects to MMLU_DOMAINS
+    }
+    
+    for expert_name, subjects in expert_domain_mapping.items():
+        if expert_name not in smart_manager.configs:
+            continue
+            
+        print(f"\n  Testing {expert_name} expert...")
+        expert = smart_manager.get_expert(expert_name)
+        
+        expert_results = []
+        for subject in subjects:
+            if subject in [s for sublist in MMLU_DOMAINS.values() for s in sublist]:
+                dataset = load_dataset("cais/mmlu", subject, split="test")
+                df = evaluate_mmlu_subset(expert, dataset, num_questions=10)
+                expert_results.append(df)
+        
+        if expert_results:
+            expert_df = pd.concat(expert_results)
+            accuracy = expert_df["is_correct"].mean()
+            results[f"{expert_name}_expert_own_domain"] = accuracy
+            print(f"    {expert_name} expert on {expert_name} domain: {accuracy:.2%}")
+    
+    # Test experts on OTHER domains (cross-domain performance)
+    print("\n3. Testing experts on non-specialized domains...")
+    for expert_name in ["math", "bio"]:  # Just test a couple for sanity
+        if expert_name not in smart_manager.configs:
+            continue
+            
+        expert = smart_manager.get_expert(expert_name)
+        other_domain = "bio" if expert_name == "math" else "math"
+        
+        cross_results = []
+        for subject in expert_domain_mapping.get(other_domain, []):
+            if subject in [s for sublist in MMLU_DOMAINS.values() for s in sublist]:
+                dataset = load_dataset("cais/mmlu", subject, split="test")
+                df = evaluate_mmlu_subset(expert, dataset, num_questions=5)  # Fewer questions
+                cross_results.append(df)
+        
+        if cross_results:
+            cross_df = pd.concat(cross_results)
+            accuracy = cross_df["is_correct"].mean()
+            results[f"{expert_name}_expert_on_{other_domain}"] = accuracy
+            print(f"    {expert_name} expert on {other_domain} domain: {accuracy:.2%}")
+    
+    return results
+
+def create_baseline_model(base_model_config, device="cuda"):
+    """Helper to create baseline model"""
+    if device == "dml":
+        from optimum.onnxruntime import ORTModelForCausalLM
+        model = ORTModelForCausalLM.from_pretrained(
+            base_model_config["model_id"], 
+            provider="DmlExecutionProvider"
+        )
+    else:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_config["model_id"],
+            quantization_config=quantization_config,
+            trust_remote_code=True,
+            device_map="auto",
+        )
+    
+    tokenizer = AutoTokenizer.from_pretrained(base_model_config["model_id"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_length=base_model_config.get("max_length", 2048)
+    )
+    return HuggingFacePipeline(pipeline=pipe)
+
 
 def format_question(row):
     question = f"Question: {row['question']}\n"
@@ -187,6 +300,9 @@ def test_experts_directly(smart_manager, dataset, num_tests=3):
 def main():
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     parser = argparse.ArgumentParser(description="Run MMLU evaluation.")
+    parser.add_argument("--mode", type=str, default="orchestration", 
+                        choices=["baseline", "orchestration", "test_experts", "benchmark_all"],  # Added benchmark_all
+                        help="Evaluation mode")
     parser.add_argument("--mode", type=str, default="orchestration", choices=["baseline", "orchestration", "test_experts"],
                         help="Evaluation mode: 'baseline', 'orchestration', or 'test_experts'.")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "dml"],
@@ -206,7 +322,47 @@ def main():
     log_file = os.path.join(log_dir, f"detailed_{args.mode}_n{args.num_questions}_{timestamp}.txt")
 
     # Initialize models
-    if args.mode == "baseline":
+    if args.mode == "benchmark_all":
+        # Run individual benchmarks first
+        smart_manager = SmartModelManager(EXPERT_CONFIGS, device=args.device)
+        
+        benchmark_results = benchmark_individual_models(
+            smart_manager, 
+            BASE_MODEL_CONFIG, 
+            device=args.device
+        )
+        
+        # Save results
+        results_file = os.path.join(log_dir, f"benchmark_results_{timestamp}.json")
+        with open(results_file, "w") as f:
+            json.dump(benchmark_results, f, indent=2)
+        
+        print("\n" + "="*80)
+        print("BENCHMARK SUMMARY")
+        print("="*80)
+        for key, accuracy in benchmark_results.items():
+            print(f"{key}: {accuracy:.2%}")
+        
+        print(f"\nResults saved to: {results_file}")
+        
+        # Decide whether to continue with orchestration
+        print("\nAnalysis:")
+        for expert in ["math", "bio", "chem"]:
+            expert_key = f"{expert}_expert_own_domain"
+            baseline_key = f"baseline_{expert.upper() if expert != 'bio' else 'BioMed'}"
+            
+            if expert_key in benchmark_results and baseline_key in benchmark_results:
+                improvement = benchmark_results[expert_key] - benchmark_results[baseline_key]
+                print(f"{expert} expert vs baseline: {improvement:+.2%}")
+                
+                if improvement < 0:
+                    print(f"  ⚠️  WARNING: {expert} expert is WORSE than baseline!")
+        
+        smart_manager.unload_all()
+        return
+    
+
+    elif args.mode == "baseline":
         # --- Initialize Baseline Model ---
         print("Initializing baseline model...")
         if args.device == "dml":

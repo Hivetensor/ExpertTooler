@@ -63,18 +63,22 @@ class SwarmOrchestrator:
         
         # Routing decision prompt - simplified for better parsing
         self.routing_prompt = PromptTemplate(
-            input_variables=["question"],
-            template="""Look at this question and output ONLY ONE of these expert names:
-- MathematicsExpert (for ANY math question)
-- BiologyExpert (for ANY biology/medical question)  
-- ChemistryExpert (for ANY chemistry question)
-- CodeExpert (for ANY programming question)
-- NONE (for general knowledge only)
+            template="""Analyze this question step by step:
 
 Question: {question}
 
-Expert:"""
-        )
+First, identify the primary domain:
+- Is this primarily about mathematical calculations, proofs, or formulas? → MathematicsExpert
+- Is this about biological systems, medicine, or life sciences? → BiologyExpert  
+- Is this about chemical reactions, molecules, or chemistry concepts? → ChemistryExpert
+- Is this about programming, algorithms, or code? → CodeExpert
+- Is this general knowledge that doesn't require specialized expertise? → NONE
+
+Think step by step about which domain this belongs to.
+Reasoning: [your reasoning here]
+Expert: [expert name]"""
+    )
+
         
         # Direct answer prompt (when no expert is used)
         self.direct_prompt = PromptTemplate(
