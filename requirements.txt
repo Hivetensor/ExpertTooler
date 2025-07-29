@@ -3,10 +3,8 @@ datasets
 torch
 torchvision
 torchaudio
-bitsandbytes
 accelerate
-langchain
-langchain-community
+vllm
 tqdm
 optimum
 onnxruntime

@@ -1,13 +1,10 @@
-from langchain.schema import BaseOutputParser
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain_community.llms import HuggingFacePipeline
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 import torch
 import re
 import json
 
-class RoutingDecisionParser(BaseOutputParser):
+class RoutingDecisionParser:
     """Parser for routing decisions with fallback handling"""
     def parse(self, text: str):
         decision = {
@@ -54,6 +51,24 @@ class RoutingDecisionParser(BaseOutputParser):
             
         return decision
 
+class VLLMWrapper:
+    """Wrapper to make VLLM compatible with the existing interface"""
+    
+    def __init__(self, llm, sampling_params):
+        self.llm = llm
+        self.sampling_params = sampling_params
+    
+    def generate(self, prompt):
+        """Generate response using VLLM"""
+        outputs = self.llm.generate([prompt], self.sampling_params)
+        if outputs and len(outputs) > 0:
+            return outputs[0].outputs[0].text.strip()
+        return ""
+    
+    def __call__(self, prompt):
+        """Make the wrapper callable like the old pipeline"""
+        return self.generate(prompt)
+
 class SwarmOrchestrator:
     """Orchestrator that intelligently routes questions to expert models or answers directly"""
     
@@ -62,8 +77,7 @@ class SwarmOrchestrator:
         self.tools = {tool.name: tool for tool in tools}
         
         # Routing decision prompt - simplified for better parsing
-        self.routing_prompt = PromptTemplate(
-            template="""Analyze this question step by step:
+        self.routing_prompt = """Analyze this question step by step:
 
 Question: {question}
 
@@ -77,24 +91,18 @@ First, identify the primary domain:
 Think step by step about which domain this belongs to.
 Reasoning: [your reasoning here]
 Expert: [expert name]"""
-    )
 
         
         # Direct answer prompt (when no expert is used)
-        self.direct_prompt = PromptTemplate(
-            input_variables=["question"],
-            template="""Answer the following question directly. If it's a multiple choice question, analyze all options and provide your answer in the format:
+        self.direct_prompt = """Answer the following question directly. If it's a multiple choice question, analyze all options and provide your answer in the format:
 FINAL ANSWER: [A/B/C/D]
 
 Question: {question}
 
 Answer:"""
-        )
         
         # Synthesis prompt (when expert is used)
-        self.synthesis_prompt = PromptTemplate(
-            input_variables=["question", "expert_response", "expert_name"],
-            template="""You are an expert synthesizer. Your job is to take a question and an expert's analysis and output a final answer.
+        self.synthesis_prompt = """You are an expert synthesizer. Your job is to take a question and an expert's analysis and output a final answer.
 For multiple-choice questions, you must respond with ONLY the following format:
 FINAL ANSWER: [LETTER]
 
@@ -103,16 +111,9 @@ Question: {question}
 
 Based on the analysis, what is the final answer?
 Final Answer:"""
-        )
         
-        # Initialize chains
-        self.router = LLMChain(
-            llm=self.llm, 
-            prompt=self.routing_prompt,
-            output_parser=RoutingDecisionParser()
-        )
-        self.direct_chain = LLMChain(llm=self.llm, prompt=self.direct_prompt)
-        self.synthesis_chain = LLMChain(llm=self.llm, prompt=self.synthesis_prompt)
+        # Initialize parser
+        self.parser = RoutingDecisionParser()
         
         # Research metrics tracking
         self.call_history = []
@@ -123,8 +124,8 @@ Final Answer:"""
         
         # Step 1: Make routing decision
         try:
-            routing_text = self.router.llm(self.routing_prompt.format(question=input))
-            decision = self.router.output_parser.parse(routing_text)
+            routing_text = self.llm(self.routing_prompt.format(question=input))
+            decision = self.parser.parse(routing_text)
             
             if self.debug_mode:
                 print(f"\n[ROUTING DECISION]")
@@ -161,16 +162,17 @@ Final Answer:"""
                     print(f"[EXPERT RESPONSE]: {expert_response}")
                 
                 # Synthesize final answer using expert response
-                final_response = self.synthesis_chain.run(
+                synthesis_prompt = self.synthesis_prompt.format(
                     question=input,
                     expert_response=expert_response,
                     expert_name=expert_name
                 )
+                final_response = self.llm(synthesis_prompt)
                 
             except Exception as e:
                 print(f"[ERROR] Expert call failed: {e}")
                 # Fallback to direct answer
-                final_response = self.direct_chain.run(question=input)
+                final_response = self.llm(self.direct_prompt.format(question=input))
                 call_record['expert_used'] = 'NONE (expert failed)'
                 
         else:
@@ -178,7 +180,7 @@ Final Answer:"""
             if self.debug_mode:
                 print(f"\n[DIRECT ANSWER - No expert needed]")
                 
-            final_response = self.direct_chain.run(question=input)
+            final_response = self.llm(self.direct_prompt.format(question=input))
             call_record['expert_used'] = 'NONE'
         
         # Step 3: Clean up response for multiple choice
@@ -242,7 +244,7 @@ def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
     Creates a swarm orchestrator that intelligently routes questions to expert models.
     
     Args:
-        expert_tools: List of LangChain tools representing expert models
+        expert_tools: List of tools representing expert models
         base_model_config: Configuration for the base orchestrator model
         device: Device to run on ("cuda" or "dml")
     
@@ -251,44 +253,31 @@ def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
     """
     print(f"Initializing swarm orchestrator on {device}...")
     
-    # Initialize base model for orchestration
     if device == "dml":
-        from optimum.onnxruntime import ORTModelForCausalLM
-        model = ORTModelForCausalLM.from_pretrained(
-            base_model_config["model_id"], 
-            provider="DmlExecutionProvider"
-        )
-    else:  # cuda
-        # quantization_config = BitsAndBytesConfig(
-        #     load_in_4bit=base_model_config.get("load_in_4bit", True),
-        #     bnb_4bit_quant_type="nf4",
-        #     bnb_4bit_compute_dtype=torch.float16,
-        # )
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_config["model_id"],
-            quantization_config=None,
-            trust_remote_code=True,
-            device_map="auto",
-        )
+        # VLLM doesn't support DirectML, fallback to CPU
+        print("Warning: VLLM doesn't support DirectML, using CPU for orchestrator")
+        device = "cpu"
     
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(base_model_config["model_id"])
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    # Create pipeline
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=base_model_config.get("max_length", 512),
-        temperature=0.1,  # Low temperature for more deterministic routing
-        do_sample=True,
-        pad_token_id=tokenizer.pad_token_id,
+    # Create VLLM model
+    llm = LLM(
+        model=base_model_config["model_id"],
+        trust_remote_code=True,
+        tensor_parallel_size=1 if device == "cpu" else 1,
+        gpu_memory_utilization=0.9 if device != "cpu" else 0,
+        enforce_eager=True,
+        max_model_len=base_model_config.get("max_length", 2048)
     )
     
-    # Wrap in LangChain LLM
-    base_llm = HuggingFacePipeline(pipeline=pipe)
+    # Create sampling parameters
+    sampling_params = SamplingParams(
+        temperature=0.1,  # Low temperature for more deterministic routing
+        top_p=0.9,
+        max_tokens=base_model_config.get("max_length", 512),
+        stop=["\n\n", "Question:", "Choices:"]
+    )
+    
+    # Wrap in our custom wrapper
+    base_llm = VLLMWrapper(llm, sampling_params)
     
     # Create and return orchestrator
     orchestrator = SwarmOrchestrator(base_llm, expert_tools)

@@ -8,8 +8,8 @@ import sys
 from smart_manager import SmartModelManager
 from expert_tools import create_expert_tools
 from orchestrator import create_orchestrator_agent
-from langchain_community.llms import HuggingFacePipeline
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 import torch
 import json 
 
@@ -48,6 +48,24 @@ MMLU_DOMAINS = {
     "BioMed": ["anatomy", "clinical_knowledge", "college_biology", "college_medicine", "professional_medicine"],
     "Chemistry": ["college_chemistry", "high_school_chemistry"],
 }
+
+class VLLMWrapper:
+    """Wrapper to make VLLM compatible with the existing interface"""
+    
+    def __init__(self, llm, sampling_params):
+        self.llm = llm
+        self.sampling_params = sampling_params
+    
+    def generate(self, prompt):
+        """Generate response using VLLM"""
+        outputs = self.llm.generate([prompt], self.sampling_params)
+        if outputs and len(outputs) > 0:
+            return outputs[0].outputs[0].text.strip()
+        return ""
+    
+    def __call__(self, prompt):
+        """Make the wrapper callable like the old pipeline"""
+        return self.generate(prompt)
 
 def benchmark_individual_models(smart_manager, base_model_config, device="cuda"):
     """Test each model individually on their specific domains"""
@@ -127,37 +145,30 @@ def benchmark_individual_models(smart_manager, base_model_config, device="cuda")
     return results
 
 def create_baseline_model(base_model_config, device="cuda"):
-    """Helper to create baseline model"""
+    """Helper to create baseline model using VLLM"""
     if device == "dml":
-        from optimum.onnxruntime import ORTModelForCausalLM
-        model = ORTModelForCausalLM.from_pretrained(
-            base_model_config["model_id"], 
-            provider="DmlExecutionProvider"
-        )
-    else:
-        # quantization_config = BitsAndBytesConfig(
-        #     load_in_4bit=True,
-        #     bnb_4bit_quant_type="nf4",
-        #     bnb_4bit_compute_dtype=torch.float16,
-        # )
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_config["model_id"],
-            quantization_config=None,
-            trust_remote_code=True,
-            device_map="auto",
-        )
+        # VLLM doesn't support DirectML, fallback to CPU
+        print("Warning: VLLM doesn't support DirectML, using CPU")
+        device = "cpu"
     
-    tokenizer = AutoTokenizer.from_pretrained(base_model_config["model_id"])
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_length=base_model_config.get("max_length", 2048)
+    # Create VLLM model
+    llm = LLM(
+        model=base_model_config["model_id"],
+        trust_remote_code=True,
+        tensor_parallel_size=1 if device == "cpu" else torch.cuda.device_count(),
+        gpu_memory_utilization=0.9 if device != "cpu" else 0,
+        enforce_eager=True
     )
-    return HuggingFacePipeline(pipeline=pipe)
+    
+    # Create sampling parameters
+    sampling_params = SamplingParams(
+        temperature=0.1,
+        top_p=0.9,
+        max_tokens=base_model_config.get("max_length", 512),
+        stop=["\n\n", "Question:", "Choices:"]
+    )
+    
+    return VLLMWrapper(llm, sampling_params)
 
 
 def format_question(row):
@@ -197,11 +208,11 @@ def evaluate_mmlu_subset(model, dataset, num_questions=None, log_file=None, mode
                     print(f"Expert Used: {last_call.get('expert_used', 'Unknown')}")
                     print(f"Routing Decision: {last_call.get('routing_decision', {})}")
                     
-            else: # It's a baseline pipeline
-                response = model(prompt)
-                # Extract only the generated text after the prompt
-                if "Answer:" in response:
-                    response = response.split("Answer:")[-1]
+            else: # It's a baseline VLLM model
+                response = model.generate(prompt)
+                # VLLM returns the generated text without the prompt
+                if isinstance(response, list) and len(response) > 0:
+                    response = response[0]
 
             if log_file:
                 print(f"\n[FINAL RESPONSE]: {response}")
@@ -277,7 +288,10 @@ def test_experts_directly(smart_manager, dataset, num_tests=3):
                 print(f"\nQuestion: {row['question'][:100]}...")
                 print(f"Correct Answer: {chr(65 + row['answer'])}")
                 
-                response = expert(prompt)
+                if hasattr(expert, 'generate'):
+                    response = expert.generate(prompt)
+                else:
+                    response = expert(prompt)
                 print(f"Expert Response: {response}")
                 
         except Exception as e:
@@ -365,39 +379,8 @@ def main():
 
     elif args.mode == "baseline":
         # --- Initialize Baseline Model ---
-        print("Initializing baseline model...")
-        if args.device == "dml":
-            from optimum.onnxruntime import ORTModelForCausalLM
-            model = ORTModelForCausalLM.from_pretrained(BASE_MODEL_CONFIG["model_id"], provider="DmlExecutionProvider")
-            tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_CONFIG["model_id"])
-            pipe = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_length=BASE_MODEL_CONFIG.get("max_length", 2048)
-            )
-            baseline_pipeline = HuggingFacePipeline(pipeline=pipe)
-        else: # cuda
-            # quantization_config = BitsAndBytesConfig(
-            #     load_in_4bit=True,
-            #     bnb_4bit_quant_type="nf4",
-            #     bnb_4bit_compute_dtype=torch.float16,
-            # )
-            model = AutoModelForCausalLM.from_pretrained(
-                BASE_MODEL_CONFIG["model_id"],
-                quantization_config=None,
-                trust_remote_code=True,
-                device_map="auto",
-            )
-            tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_CONFIG["model_id"])
-            pipe = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_length=BASE_MODEL_CONFIG.get("max_length", 2048)
-            )
-            baseline_pipeline = HuggingFacePipeline(pipeline=pipe)
-        model_to_evaluate = baseline_pipeline
+        print("Initializing baseline model with VLLM...")
+        model_to_evaluate = create_baseline_model(BASE_MODEL_CONFIG, device=args.device)
         smart_manager = None
     else:
         # --- Initialize Managers and Tools for Orchestration ---

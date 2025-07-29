@@ -1,6 +1,24 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
-from langchain_community.llms import HuggingFacePipeline
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+
+class VLLMWrapper:
+    """Wrapper to make VLLM compatible with the existing interface"""
+    
+    def __init__(self, llm, sampling_params):
+        self.llm = llm
+        self.sampling_params = sampling_params
+    
+    def generate(self, prompt):
+        """Generate response using VLLM"""
+        outputs = self.llm.generate([prompt], self.sampling_params)
+        if outputs and len(outputs) > 0:
+            return outputs[0].outputs[0].text.strip()
+        return ""
+    
+    def __call__(self, prompt):
+        """Make the wrapper callable like the old pipeline"""
+        return self.generate(prompt)
 
 class SmartModelManager:
     def __init__(self, expert_configs, device="cuda"):
@@ -19,43 +37,32 @@ class SmartModelManager:
             config = self.configs[expert_name]
 
             if self.device == "dml":
-                from optimum.onnxruntime import ORTModelForCausalLM
-                model = ORTModelForCausalLM.from_pretrained(config["model_id"], provider="DmlExecutionProvider")
-            else: # cuda
-                # quantization_config = BitsAndBytesConfig(
-                #     load_in_4bit=config.get("load_in_4bit", True),
-                #     bnb_4bit_quant_type="nf4",
-                #     bnb_4bit_compute_dtype=torch.float16,
-                # )
-                model = AutoModelForCausalLM.from_pretrained(
-                    config["model_id"],
-                    quantization_config=None,
-                    trust_remote_code=True,
-                    device_map="auto",
-                )
-            
-            if config["model_id"] not in self.tokenizer_cache:
-                self.tokenizer_cache[config["model_id"]] = AutoTokenizer.from_pretrained(config["model_id"])
-            
-            tokenizer = self.tokenizer_cache[config["model_id"]]
-            
-            # Ensure tokenizer has pad_token
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-
-            # Create the pipeline first
-            pipe = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_new_tokens=config.get("max_length", 512),
-                temperature=0.1,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
+                # VLLM doesn't support DirectML, fallback to CPU
+                print("Warning: VLLM doesn't support DirectML, using CPU for experts")
+                device = "cpu"
+            else:
+                device = self.device
+                
+            # Create VLLM model
+            llm = LLM(
+                model=config["model_id"],
+                trust_remote_code=True,
+                tensor_parallel_size=1 if device == "cpu" else 1,
+                gpu_memory_utilization=0.9 if device != "cpu" else 0,
+                enforce_eager=True,
+                max_model_len=config.get("max_length", 2048)
             )
             
-            # Then wrap it in HuggingFacePipeline
-            self.experts[expert_name] = HuggingFacePipeline(pipeline=pipe)
+            # Create sampling parameters
+            sampling_params = SamplingParams(
+                temperature=0.1,
+                top_p=0.9,
+                max_tokens=config.get("max_length", 512),
+                stop=["\n\n", "Question:", "Choices:"]
+            )
+            
+            # Wrap in our custom wrapper
+            self.experts[expert_name] = VLLMWrapper(llm, sampling_params)
             self.current_model = expert_name
             print(f"Expert {expert_name} loaded.")
 

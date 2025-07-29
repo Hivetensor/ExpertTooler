@@ -20,11 +20,8 @@ class TestMMLURunner(unittest.TestCase):
         """Test that the MMLU question is formatted correctly."""
         row = {
             "question": "What is 2+2?",
-            "choice0": "3",
-            "choice1": "4",
-            "choice2": "5",
-            "choice3": "6",
-            "answer": "B",
+            "choices": ["3", "4", "5", "6"],
+            "answer": 1,
         }
         expected_output = "Question: What is 2+2?\nChoices:\nA. 3\nB. 4\nC. 5\nD. 6\nAnswer:"
         self.assertEqual(format_question(row), expected_output)
@@ -36,13 +33,12 @@ class TestMMLURunner(unittest.TestCase):
         mock_agent.run.side_effect = ["B", "A"]  # Agent returns 'B' then 'A'
         
         mock_dataset = [
-            {"question": "Q1", "choice0": "A", "choice1": "B", "choice2": "C", "choice3": "D", "answer": "B"},
-            {"question": "Q2", "choice0": "A", "choice1": "B", "choice2": "C", "choice3": "D", "answer": "C"},
+            {"question": "Q1", "choices": ["A", "B", "C", "D"], "answer": 1},
+            {"question": "Q2", "choices": ["A", "B", "C", "D"], "answer": 2},
         ]
 
-        # Call the function
-        with patch('mmlu_runner.pd.DataFrame', new=pd.DataFrame) as mock_df:
-            results_df = evaluate_mmlu_subset(mock_agent, mock_dataset, num_questions=2)
+        # Call the function  
+        results_df = evaluate_mmlu_subset(mock_agent, mock_dataset, num_questions=2)
 
         # Assertions
         self.assertEqual(mock_agent.run.call_count, 2)
