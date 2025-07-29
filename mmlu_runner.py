@@ -41,28 +41,6 @@ EXPERT_CONFIGS = {
     },
 }
 
-log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-timestamp = time.strftime("%Y%m%d-%H%M%S")
-log_file = os.path.join(log_dir, f"detailed_{args.mode}_n{args.num_questions}_{timestamp}.txt")
-
-
-class Tee:
-    def __init__(self, *files):
-        self.files = files
-    def write(self, obj):
-        for f in self.files:
-            f.write(obj)
-            f.flush()
-    def flush(self):
-        for f in self.files:
-            f.flush()
-
-log_handle = open(log_file, "a")
-original_stdout = sys.stdout
-sys.stdout = Tee(sys.stdout, log_handle)
 
 MMLU_DOMAINS = {
     "STEM": ["abstract_algebra", "college_mathematics", "high_school_mathematics", "formal_logic"],
@@ -315,6 +293,29 @@ def main():
     parser.add_argument("--num_questions", type=int, default=5,
                         help="Number of questions to evaluate per subject. If not provided, all questions will be evaluated.")
     args = parser.parse_args()
+
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    log_file = os.path.join(log_dir, f"detailed_{args.mode}_n{args.num_questions}_{timestamp}.txt")
+
+
+    class Tee:
+        def __init__(self, *files):
+            self.files = files
+        def write(self, obj):
+            for f in self.files:
+                f.write(obj)
+                f.flush()
+        def flush(self):
+            for f in self.files:
+                f.flush()
+
+    log_handle = open(log_file, "a")
+    original_stdout = sys.stdout
+    sys.stdout = Tee(sys.stdout, log_handle)
 
     print(f"Running evaluation in {args.mode} mode on {args.device} device.")
 
