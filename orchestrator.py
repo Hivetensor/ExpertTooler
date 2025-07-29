@@ -77,18 +77,20 @@ class SwarmOrchestrator:
         self.tools = {tool.name: tool for tool in tools}
         
         # Routing decision prompt - simplified for better parsing
-        self.routing_prompt = """Analyze this question step by step:
+        self.routing_prompt = """Analyze this question step by step to determine if expert analysis would be helpful:
 
 Question: {question}
 
-First, identify the primary domain:
-- Is this primarily about mathematical calculations, proofs, or formulas? → MathematicsExpert
-- Is this about biological systems, medicine, or life sciences? → BiologyExpert  
-- Is this about chemical reactions, molecules, or chemistry concepts? → ChemistryExpert
-- Is this about programming, algorithms, or code? → CodeExpert
-- Is this general knowledge that doesn't require specialized expertise? → NONE
+Determine the primary domain and whether expert insight would be valuable:
+- Mathematical calculations, proofs, equations, or complex math concepts? → MathematicsExpert
+- Biological processes, anatomy, medicine, or life sciences? → BiologyExpert  
+- Chemical reactions, molecular structures, or chemistry principles? → ChemistryExpert
+- Programming concepts, algorithms, or computer science? → CodeExpert
+- General knowledge, history, language, or simple facts? → NONE
 
-Think step by step about which domain this belongs to.
+Choose NONE if this is straightforward general knowledge that doesn't need specialized domain expertise.
+
+Think step by step about which domain would provide the most valuable analysis.
 Reasoning: [your reasoning here]
 Expert: [expert name]"""
 
@@ -102,15 +104,19 @@ Question: {question}
 Answer:"""
         
         # Synthesis prompt (when expert is used)
-        self.synthesis_prompt = """You are an expert synthesizer. Your job is to take a question and an expert's analysis and output a final answer.
+        self.synthesis_prompt = """You are a general AI model making the final decision based on expert analysis. The expert has provided context and insights, but YOU must make the final answer choice.
+
+Use the expert's analysis to inform your reasoning, but think through the problem yourself and make your own decision.
+
 For multiple-choice questions, you must respond with ONLY the following format:
 FINAL ANSWER: [LETTER]
 
 Question: {question}
-{expert_name}'s Analysis: {expert_response}
 
-Based on the analysis, what is the final answer?
-Final Answer:"""
+Expert Analysis from {expert_name}: {expert_response}
+
+Now, using this expert context, analyze the question yourself and provide your final answer:
+FINAL ANSWER:"""
         
         # Initialize parser
         self.parser = RoutingDecisionParser()
@@ -276,8 +282,8 @@ def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
     sampling_params = SamplingParams(
         temperature=0.1,  # Low temperature for more deterministic routing
         top_p=0.9,
-        max_tokens=base_model_config.get("max_length", 512),
-        stop=["\n\n", "Question:", "Choices:"]
+        max_tokens=256,  # Shorter for routing decisions
+        stop=["Answer:", "Final Answer:"]  # More appropriate stop tokens
     )
     
     # Wrap in our custom wrapper

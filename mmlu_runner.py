@@ -165,7 +165,7 @@ def create_baseline_model(base_model_config, device="cuda"):
         temperature=0.1,
         top_p=0.9,
         max_tokens=base_model_config.get("max_length", 512),
-        stop=["\n\n", "Question:", "Choices:"]
+        stop=["Question:", "Choices:", "\n\nQuestion"]
     )
     
     return VLLMWrapper(llm, sampling_params)

@@ -58,7 +58,7 @@ class SmartModelManager:
                 temperature=0.1,
                 top_p=0.9,
                 max_tokens=config.get("max_length", 512),
-                stop=["\n\n", "Question:", "Choices:"]
+                stop=["Question:", "Choices:", "\n\nQuestion"]
             )
             
             # Wrap in our custom wrapper
