@@ -22,7 +22,7 @@ EXPERT_CONFIGS = {
     "math": {
         "name": "MathematicsExpert",
         "description": "Expert in mathematical reasoning, calculations, and symbolic math.",
-        "model_id": "deepseek-ai/deepseek-math-7b-rl",  # RL-tuned version
+        "model_id": "EleutherAI/llemma_7b",  # RL-tuned version
     },
     "bio": {
         "name": "BiologyExpert",
@@ -32,7 +32,7 @@ EXPERT_CONFIGS = {
     "chem": {
         "name": "ChemistryExpert",
         "description": "Expert in chemistry, molecular structures, and reactions.",
-        "model_id": "OpenBMB/MiniCPM-2B-sft-bf16",
+        "model_id": "BioMistral/BioMistral-7B",
     },
     "code": {
         "name": "CodeExpert",
@@ -42,6 +42,20 @@ EXPERT_CONFIGS = {
 }
 
 
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_handle = open(log_file, "a")
+original_stdout = sys.stdout
+sys.stdout = Tee(sys.stdout, log_handle)
 
 MMLU_DOMAINS = {
     "STEM": ["abstract_algebra", "college_mathematics", "high_school_mathematics", "formal_logic"],
@@ -172,21 +186,7 @@ def evaluate_mmlu_subset(model, dataset, num_questions=None, log_file=None, mode
     eval_range = range(len(dataset)) if num_questions is None or num_questions > len(dataset) else range(num_questions)
 
     # Redirect stdout to capture all debug output if in orchestration mode
-    if mode == "orchestration" and log_file:
-        class Tee:
-            def __init__(self, *files):
-                self.files = files
-            def write(self, obj):
-                for f in self.files:
-                    f.write(obj)
-                    f.flush()
-            def flush(self):
-                for f in self.files:
-                    f.flush()
-        
-        log_handle = open(log_file, "a")
-        original_stdout = sys.stdout
-        sys.stdout = Tee(sys.stdout, log_handle)
+    
 
     for i in tqdm(eval_range, desc="Evaluating"):
         row = dataset[i]
