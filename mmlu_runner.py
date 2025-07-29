@@ -68,79 +68,86 @@ class VLLMWrapper:
         return self.generate(prompt)
 
 def benchmark_individual_models(smart_manager, base_model_config, device="cuda"):
-    """Test each model individually on their specific domains"""
+    """Test each model individually with proper subject-level comparisons"""
     results = {}
     
     print("\n" + "="*80)
-    print("INDIVIDUAL MODEL BENCHMARKING")
+    print("INDIVIDUAL MODEL BENCHMARKING - SUBJECT BY SUBJECT")
     print("="*80)
     
-    # Test baseline model on all subjects
-    print("\n1. Testing baseline model on all domains...")
-    baseline_pipeline = create_baseline_model(base_model_config, device)
-    
-    for domain, subjects in MMLU_DOMAINS.items():
-        domain_results = []
-        for subject in subjects:
-            dataset = load_dataset("cais/mmlu", subject, split="test")
-            df = evaluate_mmlu_subset(baseline_pipeline, dataset, num_questions=10)
-            domain_results.append(df)
-        
-        domain_df = pd.concat(domain_results)
-        accuracy = domain_df["is_correct"].mean()
-        results[f"baseline_{domain}"] = accuracy
-        print(f"  Baseline on {domain}: {accuracy:.2%}")
-    
-    # Test each expert on their own domain
-    print("\n2. Testing experts on their specialized domains...")
-    expert_domain_mapping = {
+    # Define expert-to-subject mappings for fair comparison
+    expert_subject_mapping = {
         "math": ["abstract_algebra", "college_mathematics", "high_school_mathematics"],
-        "bio": ["anatomy", "college_biology", "college_medicine"],
+        "bio": ["anatomy", "college_biology", "college_medicine"], 
         "chem": ["college_chemistry", "high_school_chemistry"],
-        "code": ["computer_security", "high_school_computer_science"],  # Add CS subjects to MMLU_DOMAINS
     }
     
-    for expert_name, subjects in expert_domain_mapping.items():
+    # Test baseline model on each subject individually
+    print("\n1. Testing baseline model on individual subjects...")
+    baseline_pipeline = create_baseline_model(base_model_config, device)
+    
+    # Test baseline on each expert's subjects for direct comparison
+    for expert_name, subjects in expert_subject_mapping.items():
+        print(f"\n  Baseline performance on {expert_name} subjects:")
+        for subject in subjects:
+            try:
+                dataset = load_dataset("cais/mmlu", subject, split="test")
+                df = evaluate_mmlu_subset(baseline_pipeline, dataset, num_questions=10)
+                accuracy = df["is_correct"].mean()
+                results[f"baseline_{subject}"] = accuracy
+                print(f"    {subject}: {accuracy:.2%}")
+            except Exception as e:
+                print(f"    {subject}: ERROR - {e}")
+    
+    # Test each expert on their specialized subjects
+    print("\n2. Testing experts on their specialized subjects...")
+    for expert_name, subjects in expert_subject_mapping.items():
         if expert_name not in smart_manager.configs:
             continue
             
-        print(f"\n  Testing {expert_name} expert...")
+        print(f"\n  {expert_name.upper()} Expert performance:")
         expert = smart_manager.get_expert(expert_name)
         
-        expert_results = []
         for subject in subjects:
-            if subject in [s for sublist in MMLU_DOMAINS.values() for s in sublist]:
+            try:
                 dataset = load_dataset("cais/mmlu", subject, split="test")
                 df = evaluate_mmlu_subset(expert, dataset, num_questions=10)
-                expert_results.append(df)
-        
-        if expert_results:
-            expert_df = pd.concat(expert_results)
-            accuracy = expert_df["is_correct"].mean()
-            results[f"{expert_name}_expert_own_domain"] = accuracy
-            print(f"    {expert_name} expert on {expert_name} domain: {accuracy:.2%}")
+                accuracy = df["is_correct"].mean()
+                results[f"{expert_name}_expert_{subject}"] = accuracy
+                print(f"    {subject}: {accuracy:.2%}")
+                
+                # Calculate improvement over baseline
+                baseline_key = f"baseline_{subject}"
+                if baseline_key in results:
+                    improvement = accuracy - results[baseline_key]
+                    print(f"      vs baseline: {improvement:+.2%}")
+                    
+            except Exception as e:
+                print(f"    {subject}: ERROR - {e}")
     
-    # Test experts on OTHER domains (cross-domain performance)
-    print("\n3. Testing experts on non-specialized domains...")
-    for expert_name in ["math", "bio"]:  # Just test a couple for sanity
+    # Summary comparison
+    print("\n3. SUMMARY - Expert vs Baseline by Subject:")
+    print("-" * 60)
+    print(f"{'Subject':<25} | {'Baseline':<10} | {'Expert':<10} | {'Improvement':<12}")
+    print("-" * 60)
+    
+    for expert_name, subjects in expert_subject_mapping.items():
         if expert_name not in smart_manager.configs:
             continue
             
-        expert = smart_manager.get_expert(expert_name)
-        other_domain = "bio" if expert_name == "math" else "math"
-        
-        cross_results = []
-        for subject in expert_domain_mapping.get(other_domain, []):
-            if subject in [s for sublist in MMLU_DOMAINS.values() for s in sublist]:
-                dataset = load_dataset("cais/mmlu", subject, split="test")
-                df = evaluate_mmlu_subset(expert, dataset, num_questions=5)  # Fewer questions
-                cross_results.append(df)
-        
-        if cross_results:
-            cross_df = pd.concat(cross_results)
-            accuracy = cross_df["is_correct"].mean()
-            results[f"{expert_name}_expert_on_{other_domain}"] = accuracy
-            print(f"    {expert_name} expert on {other_domain} domain: {accuracy:.2%}")
+        for subject in subjects:
+            baseline_key = f"baseline_{subject}"
+            expert_key = f"{expert_name}_expert_{subject}"
+            
+            if baseline_key in results and expert_key in results:
+                baseline_acc = results[baseline_key]
+                expert_acc = results[expert_key]
+                improvement = expert_acc - baseline_acc
+                
+                print(f"{subject:<25} | {baseline_acc:<10.2%} | {expert_acc:<10.2%} | {improvement:+<12.2%}")
+                
+                # Store summary results
+                results[f"improvement_{subject}"] = improvement
     
     return results
 
@@ -352,26 +359,52 @@ def main():
         with open(results_file, "w") as f:
             json.dump(benchmark_results, f, indent=2)
         
-        print("\n" + "="*80)
-        print("BENCHMARK SUMMARY")
-        print("="*80)
-        for key, accuracy in benchmark_results.items():
-            print(f"{key}: {accuracy:.2%}")
-        
         print(f"\nResults saved to: {results_file}")
         
-        # Decide whether to continue with orchestration
-        print("\nAnalysis:")
-        for expert in ["math", "bio", "chem"]:
-            expert_key = f"{expert}_expert_own_domain"
-            baseline_key = f"baseline_{expert.upper() if expert != 'bio' else 'BioMed'}"
+        # Analyze results by subject for better insights
+        print("\n" + "="*80)
+        print("EXPERT EFFECTIVENESS ANALYSIS")
+        print("="*80)
+        
+        expert_subjects = {
+            "math": ["abstract_algebra", "college_mathematics", "high_school_mathematics"],
+            "bio": ["anatomy", "college_biology", "college_medicine"], 
+            "chem": ["college_chemistry", "high_school_chemistry"],
+        }
+        
+        overall_improvements = {}
+        for expert_name, subjects in expert_subjects.items():
+            improvements = []
+            print(f"\n{expert_name.upper()} Expert Analysis:")
             
-            if expert_key in benchmark_results and baseline_key in benchmark_results:
-                improvement = benchmark_results[expert_key] - benchmark_results[baseline_key]
-                print(f"{expert} expert vs baseline: {improvement:+.2%}")
+            for subject in subjects:
+                improvement_key = f"improvement_{subject}"
+                if improvement_key in benchmark_results:
+                    improvement = benchmark_results[improvement_key]
+                    improvements.append(improvement)
+                    status = "✓" if improvement > 0 else "✗" if improvement < -0.01 else "~"
+                    print(f"  {subject:<25}: {improvement:+.2%} {status}")
+            
+            if improvements:
+                avg_improvement = sum(improvements) / len(improvements)
+                overall_improvements[expert_name] = avg_improvement
+                print(f"  Average improvement: {avg_improvement:+.2%}")
                 
-                if improvement < 0:
-                    print(f"  ⚠️  WARNING: {expert} expert is WORSE than baseline!")
+                if avg_improvement < -0.01:
+                    print(f"  ⚠️  WARNING: {expert_name} expert is WORSE than baseline!")
+                elif avg_improvement > 0.01:
+                    print(f"  ✓ {expert_name} expert shows positive improvement")
+                else:
+                    print(f"  ~ {expert_name} expert shows marginal difference")
+        
+        # Overall recommendation
+        print(f"\n{'='*80}")
+        print("RECOMMENDATION:")
+        effective_experts = [name for name, improvement in overall_improvements.items() if improvement > 0.01]
+        if effective_experts:
+            print(f"✓ Use orchestration with experts: {', '.join(effective_experts)}")
+        else:
+            print("✗ Experts do not show clear benefit - consider using baseline only")
         
         smart_manager.unload_all()
         return
