@@ -41,6 +41,13 @@ EXPERT_CONFIGS = {
     },
 }
 
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+log_file = os.path.join(log_dir, f"detailed_{args.mode}_n{args.num_questions}_{timestamp}.txt")
+
 
 class Tee:
     def __init__(self, *files):
@@ -312,12 +319,6 @@ def main():
     print(f"Running evaluation in {args.mode} mode on {args.device} device.")
 
     # --- Create Log File ---
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    log_file = os.path.join(log_dir, f"detailed_{args.mode}_n{args.num_questions}_{timestamp}.txt")
 
     # Initialize models
     if args.mode == "benchmark_all":
