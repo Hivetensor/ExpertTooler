@@ -125,6 +125,8 @@ Final Answer:"""
         # Step 1: Make routing decision
         try:
             routing_text = self.llm(self.routing_prompt.format(question=input))
+            if self.debug_mode:
+                print(f"\n[RAW ROUTING RESPONSE]: {routing_text}")
             decision = self.parser.parse(routing_text)
             
             if self.debug_mode:
@@ -132,6 +134,8 @@ Final Answer:"""
                 print(f"Use Expert: {decision['use_expert']}")
                 print(f"Expert: {decision['expert']}")
                 print(f"Reasoning: {decision['reasoning']}")
+                print(f"Available tools: {list(self.tools.keys())}")
+                print(f"Expert in tools: {decision['expert'] in self.tools}")
                 
         except Exception as e:
             print(f"[ERROR] Routing failed: {e}")
