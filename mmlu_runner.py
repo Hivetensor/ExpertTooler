@@ -15,7 +15,7 @@ import json
 
 # --- Configuration ---
 BASE_MODEL_CONFIG = {
-    "model_id": "mistralai/Mixtral-8x7B-Instruct-v0.1",  # ~35GB in 4-bit
+    "model_id": "mistralai/mistral-7b-instruct-v0.3",  # ~35GB in 4-bit
     "max_length": 2048,
 }
 
