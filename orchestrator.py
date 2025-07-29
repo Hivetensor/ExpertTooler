@@ -268,14 +268,16 @@ def create_orchestrator_agent(expert_tools, base_model_config, device="cuda"):
         print("Warning: VLLM doesn't support DirectML, using CPU for orchestrator")
         device = "cpu"
     
-    # Create VLLM model
+    # Create VLLM model with conservative memory settings
     llm = LLM(
         model=base_model_config["model_id"],
         trust_remote_code=True,
-        tensor_parallel_size=1 if device == "cpu" else 1,
-        gpu_memory_utilization=0.9 if device != "cpu" else 0,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.7 if device != "cpu" else 0,  # More conservative
         enforce_eager=True,
-        max_model_len=base_model_config.get("max_length", 2048)
+        max_model_len=base_model_config.get("max_length", 2048),
+        swap_space=2,  # Allow some CPU swap
+        disable_log_stats=True  # Reduce overhead
     )
     
     # Create sampling parameters

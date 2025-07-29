@@ -99,6 +99,14 @@ def benchmark_individual_models(smart_manager, base_model_config, device="cuda")
             except Exception as e:
                 print(f"    {subject}: ERROR - {e}")
     
+    # Clean up baseline model
+    print("\n  Unloading baseline model...")
+    import gc
+    del baseline_pipeline
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     # Test each expert on their specialized subjects
     print("\n2. Testing experts on their specialized subjects...")
     for expert_name, subjects in expert_subject_mapping.items():
@@ -106,6 +114,8 @@ def benchmark_individual_models(smart_manager, base_model_config, device="cuda")
             continue
             
         print(f"\n  {expert_name.upper()} Expert performance:")
+        
+        # Load expert (this will unload previous experts automatically)
         expert = smart_manager.get_expert(expert_name)
         
         for subject in subjects:
@@ -124,6 +134,10 @@ def benchmark_individual_models(smart_manager, base_model_config, device="cuda")
                     
             except Exception as e:
                 print(f"    {subject}: ERROR - {e}")
+        
+        # Explicitly unload this expert before moving to next
+        print(f"  Unloading {expert_name} expert...")
+        smart_manager.unload_all()
     
     # Summary comparison
     print("\n3. SUMMARY - Expert vs Baseline by Subject:")
@@ -158,13 +172,15 @@ def create_baseline_model(base_model_config, device="cuda"):
         print("Warning: VLLM doesn't support DirectML, using CPU")
         device = "cpu"
     
-    # Create VLLM model
+    # Create VLLM model with conservative memory settings
     llm = LLM(
         model=base_model_config["model_id"],
         trust_remote_code=True,
-        tensor_parallel_size=1 if device == "cpu" else torch.cuda.device_count(),
-        gpu_memory_utilization=0.9 if device != "cpu" else 0,
-        enforce_eager=True
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.7 if device != "cpu" else 0,  # More conservative
+        enforce_eager=True,
+        swap_space=2,  # Allow some CPU swap
+        disable_log_stats=True  # Reduce overhead
     )
     
     # Create sampling parameters

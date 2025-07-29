@@ -43,14 +43,16 @@ class SmartModelManager:
             else:
                 device = self.device
                 
-            # Create VLLM model
+            # Create VLLM model with conservative memory settings
             llm = LLM(
                 model=config["model_id"],
                 trust_remote_code=True,
-                tensor_parallel_size=1 if device == "cpu" else 1,
-                gpu_memory_utilization=0.9 if device != "cpu" else 0,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=0.7 if device != "cpu" else 0,  # More conservative
                 enforce_eager=True,
-                max_model_len=config.get("max_length", 2048)
+                max_model_len=config.get("max_length", 2048),
+                swap_space=2,  # Allow some CPU swap
+                disable_log_stats=True  # Reduce overhead
             )
             
             # Create sampling parameters
@@ -70,7 +72,22 @@ class SmartModelManager:
 
     def unload_all(self):
         print("Unloading all models...")
+        # Properly cleanup VLLM models
+        for expert_name, expert in self.experts.items():
+            if hasattr(expert, 'llm') and hasattr(expert.llm, 'llm_engine'):
+                try:
+                    # Clean shutdown of VLLM engine
+                    expert.llm.llm_engine._shutdown()
+                except:
+                    pass
+        
         self.experts = {}
         self.current_model = None
-        torch.cuda.empty_cache()
+        
+        # Aggressive memory cleanup
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         print("All models unloaded and cache cleared.")
