@@ -15,7 +15,7 @@ import json
 
 # --- Configuration ---
 BASE_MODEL_CONFIG = {
-    "model_id": "mistralai/mistral-7b-instruct-v0.3",  # ~35GB in 4-bit
+    "model_id": "mistralai/mistral-7b-instruct-v0.1",  # ~35GB in 4-bit
     "max_length": 2048,
 }
 
@@ -23,7 +23,7 @@ EXPERT_CONFIGS = {
     "math": {
         "name": "MathematicsExpert",
         "description": "Expert in mathematical reasoning, calculations, and symbolic math.",
-        "model_id": "EleutherAI/llemma_7b",  # RL-tuned version
+        "model_id": "mistralai/mistral-7b-instruct-v0.3",  # RL-tuned version
     },
     "bio": {
         "name": "BiologyExpert",
