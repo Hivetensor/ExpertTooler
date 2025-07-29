@@ -135,14 +135,14 @@ def create_baseline_model(base_model_config, device="cuda"):
             provider="DmlExecutionProvider"
         )
     else:
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
+        # quantization_config = BitsAndBytesConfig(
+        #     load_in_4bit=True,
+        #     bnb_4bit_quant_type="nf4",
+        #     bnb_4bit_compute_dtype=torch.float16,
+        # )
         model = AutoModelForCausalLM.from_pretrained(
             base_model_config["model_id"],
-            quantization_config=quantization_config,
+            quantization_config=None,
             trust_remote_code=True,
             device_map="auto",
         )
@@ -378,14 +378,14 @@ def main():
             )
             baseline_pipeline = HuggingFacePipeline(pipeline=pipe)
         else: # cuda
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-            )
+            # quantization_config = BitsAndBytesConfig(
+            #     load_in_4bit=True,
+            #     bnb_4bit_quant_type="nf4",
+            #     bnb_4bit_compute_dtype=torch.float16,
+            # )
             model = AutoModelForCausalLM.from_pretrained(
                 BASE_MODEL_CONFIG["model_id"],
-                quantization_config=quantization_config,
+                quantization_config=None,
                 trust_remote_code=True,
                 device_map="auto",
             )
